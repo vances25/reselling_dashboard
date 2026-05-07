@@ -235,39 +235,38 @@ export function OrderModal({ order, onClose, onSave }: Props) {
                   </p>
                 </div>
 
-                {/* Row 3: Shipping — full width with inline checkbox + conditional input */}
-                <div className="col-span-2">
-                  <label className={labelClass}>Shipping</label>
-                  <div className="flex items-start gap-3">
-                    <label className="flex items-center gap-2 cursor-pointer select-none shrink-0 mt-2">
-                      <input
-                        type="checkbox"
-                        className="accent-blue-500 w-4 h-4"
-                        checked={form.buyerPaysShipping}
-                        onChange={(e) => set('buyerPaysShipping', e.target.checked)}
-                      />
-                      <span className="text-sm text-gray-300 whitespace-nowrap">Buyer pays shipping</span>
-                    </label>
+                {/* Row 3: Shipping — two columns, checkbox left, input right */}
+                <div>
+                  <label className={labelClass}>Your Shipping Cost ($)</label>
+                  <input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    disabled={form.buyerPaysShipping}
+                    value={form.buyerPaysShipping ? '' : form.shippingCost}
+                    onChange={(e) => set('shippingCost', e.target.value)}
+                    placeholder={form.buyerPaysShipping ? 'N/A — buyer pays' : '0.00'}
+                    className={`${inputClass} disabled:opacity-40 disabled:cursor-not-allowed`}
+                  />
+                  <p className="text-xs text-gray-500 mt-1">Cost of the label you printed</p>
+                </div>
 
-                    {!form.buyerPaysShipping ? (
-                      <div className="flex-1">
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0"
-                          value={form.shippingCost}
-                          onChange={(e) => set('shippingCost', e.target.value)}
-                          placeholder="Your label cost ($)"
-                          className={inputClass}
-                        />
-                        <p className="text-xs text-gray-500 mt-1">What YOU paid for the shipping label</p>
-                      </div>
-                    ) : (
-                      <p className="flex-1 text-xs text-gray-500 px-3 py-2 bg-gray-800 rounded border border-gray-700 self-start">
-                        Buyer covered shipping — excluded from your cost calc
+                <div className="flex flex-col justify-center">
+                  <label className={labelClass}>Shipping paid by</label>
+                  <label className="flex items-center gap-3 px-3 py-2.5 bg-gray-800 border border-gray-700 rounded cursor-pointer hover:border-gray-600 transition-colors">
+                    <input
+                      type="checkbox"
+                      className="accent-blue-500 w-4 h-4 shrink-0"
+                      checked={form.buyerPaysShipping}
+                      onChange={(e) => set('buyerPaysShipping', e.target.checked)}
+                    />
+                    <div>
+                      <p className="text-sm text-white leading-tight">Buyer pays shipping</p>
+                      <p className="text-xs text-gray-500 leading-tight mt-0.5">
+                        {form.buyerPaysShipping ? 'Excluded from your costs' : 'Check if buyer paid shipping'}
                       </p>
-                    )}
-                  </div>
+                    </div>
+                  </label>
                 </div>
               </div>
 
