@@ -14,6 +14,12 @@ const schema = z.object({
   password: z.string().min(8).max(128),
 })
 
+async function isRegistrationAllowed(): Promise<boolean> {
+  const userCount = await User.countDocuments()
+  if (userCount === 0) return true
+  return !!(await getConfig('registrationOpen', false))
+}
+
 export async function POST(req: NextRequest) {
   // Rate limit: 5 attempts per IP per minute
   const ip = req.headers.get('x-forwarded-for')?.split(',')[0] ?? 'unknown'
@@ -24,9 +30,7 @@ export async function POST(req: NextRequest) {
 
   await connectDB()
 
-  // Default is false — admin must explicitly enable registration
-  const registrationOpen = await getConfig('registrationOpen', false)
-  if (!registrationOpen) {
+  if (!(await isRegistrationAllowed())) {
     return NextResponse.json({ error: 'Registration is currently disabled.' }, { status: 403 })
   }
 
@@ -50,7 +54,6 @@ export async function POST(req: NextRequest) {
 
 export async function GET() {
   await connectDB()
-  // Default false — registration closed unless explicitly enabled
-  const registrationOpen = await getConfig('registrationOpen', false)
+  const registrationOpen = await isRegistrationAllowed()
   return NextResponse.json({ registrationOpen })
 }
