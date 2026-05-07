@@ -1,33 +1,51 @@
 export const dynamic = 'force-dynamic'
 
 import { NextRequest, NextResponse } from 'next/server'
+import { timingSafeEqual } from 'crypto'
 import { connectDB } from '@/lib/db'
 import { Order } from '@/lib/models/Order'
 import { User } from '@/lib/models/User'
 import { getConfig } from '@/lib/models/Config'
 import { EBAY_FEE_RATE } from '@/lib/utils'
 
-// ── auth helper ──────────────────────────────────────────────────────────────
+// ── auth ──────────────────────────────────────────────────────────────────────
 
 async function authenticate(req: NextRequest): Promise<boolean> {
   const enabled = await getConfig('mcpEnabled', false)
   if (!enabled) return false
 
-  const stored = await getConfig('mcpApiToken', '')
+  const stored = String(await getConfig('mcpApiToken', ''))
   if (!stored) return false
 
   const auth = req.headers.get('authorization') ?? ''
   const bearer = auth.startsWith('Bearer ') ? auth.slice(7).trim() : ''
-  return bearer === stored
+  if (!bearer) return false
+
+  // Timing-safe comparison — prevents token brute-force via timing oracle
+  try {
+    const a = Buffer.from(bearer.padEnd(stored.length, '\0'))
+    const b = Buffer.from(stored.padEnd(bearer.length, '\0'))
+    if (a.length !== b.length) return false
+    return timingSafeEqual(a, b) && bearer.length === stored.length
+  } catch {
+    return false
+  }
 }
 
-// ── JSON-RPC response helpers ─────────────────────────────────────────────────
+function unauthorized() {
+  return NextResponse.json(
+    { jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Unauthorized.' } },
+    { status: 401 }
+  )
+}
+
+// ── JSON-RPC helpers ──────────────────────────────────────────────────────────
 
 function ok(id: unknown, result: unknown) {
   return NextResponse.json({ jsonrpc: '2.0', id, result })
 }
 
-function err(id: unknown, code: number, message: string) {
+function rpcError(id: unknown, code: number, message: string) {
   return NextResponse.json({ jsonrpc: '2.0', id, error: { code, message } })
 }
 
@@ -36,61 +54,44 @@ function err(id: unknown, code: number, message: string) {
 const TOOLS = [
   {
     name: 'get_analytics',
-    description: 'Returns total profit, revenue, amount spent, orders by status, orders by platform, and profit trend for the last 12 weeks.',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-      required: [],
-    },
+    description: 'Returns total profit, revenue, amount spent, orders by status/platform, and 12-week profit trend.',
+    inputSchema: { type: 'object', properties: {}, required: [] },
   },
   {
     name: 'get_orders',
-    description: 'Returns a list of orders. Optionally filter by status or platform.',
+    description: 'Returns a list of orders, optionally filtered by status or platform.',
     inputSchema: {
       type: 'object',
       properties: {
-        status: {
-          type: 'string',
-          enum: ['Sourced', 'Listed', 'Sold', 'Archived'],
-          description: 'Filter by order status',
-        },
-        platform: {
-          type: 'string',
-          enum: ['eBay', 'Depop', 'Facebook', 'Other'],
-          description: 'Filter by platform',
-        },
-        limit: {
-          type: 'number',
-          description: 'Max results to return (default 50, max 200)',
-        },
+        status: { type: 'string', enum: ['Sourced', 'Listed', 'Sold', 'Archived'] },
+        platform: { type: 'string', enum: ['eBay', 'Depop', 'Facebook', 'Other'] },
+        limit: { type: 'number', description: 'Max results (default 50, max 200)' },
       },
       required: [],
     },
   },
   {
     name: 'get_user_stats',
-    description: 'Returns per-user breakdown: order count, total spent, revenue, profit, and sell-through rate for each seller.',
-    inputSchema: {
-      type: 'object',
-      properties: {},
-      required: [],
-    },
+    description: 'Per-seller breakdown: order count, spent, revenue, profit, sell-through rate.',
+    inputSchema: { type: 'object', properties: {}, required: [] },
   },
   {
     name: 'get_listings',
-    description: 'Returns all active inventory (Sourced + Listed orders) with location and pricing info.',
+    description: 'Active inventory (Sourced + Listed), optionally filtered by owner name.',
     inputSchema: {
       type: 'object',
       properties: {
-        owner_name: {
-          type: 'string',
-          description: 'Filter by seller name (e.g. "Me" or "Friend")',
-        },
+        owner_name: { type: 'string', description: 'Filter by seller name' },
       },
       required: [],
     },
   },
 ]
+
+// ── validated arg schemas ─────────────────────────────────────────────────────
+
+const VALID_STATUSES = new Set(['Sourced', 'Listed', 'Sold', 'Archived'])
+const VALID_PLATFORMS = new Set(['eBay', 'Depop', 'Facebook', 'Other'])
 
 // ── tool execution ────────────────────────────────────────────────────────────
 
@@ -100,8 +101,6 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
 
   if (name === 'get_analytics') {
     const orders = await Order.find({ owner: { $in: validOwnerIds }, deletedAt: null }).lean({ virtuals: true })
-    const users = await User.find({}).lean()
-
     let totalRevenue = 0, totalSpent = 0, totalProfit = 0
     const statusCounts: Record<string, number> = {}
     const platformCounts: Record<string, number> = {}
@@ -118,13 +117,11 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
       }
     }
 
-    // 12-week profit trend
     const now = new Date()
     const weekTrend = Array.from({ length: 12 }, (_, i) => {
       const d = new Date(now)
       d.setDate(d.getDate() - (11 - i) * 7)
-      const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
-      return { week: label, profit: 0, revenue: 0 }
+      return { week: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), profit: 0, revenue: 0 }
     })
     for (const o of orders) {
       if (o.soldPrice == null || !o.updatedAt) continue
@@ -147,16 +144,22 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
       ordersByStatus: statusCounts,
       ordersByPlatform: platformCounts,
       profitTrend: weekTrend,
-      sellers: users.map((u) => u.name),
     }
   }
 
   if (name === 'get_orders') {
-    const limit = Math.min(200, Number(args.limit ?? 50))
+    const limit = Math.min(200, Math.max(1, Number(args.limit ?? 50)))
+
+    // Strict enum validation — prevent operator injection
+    const statusArg = typeof args.status === 'string' ? args.status : undefined
+    const platformArg = typeof args.platform === 'string' ? args.platform : undefined
+    if (statusArg && !VALID_STATUSES.has(statusArg)) throw new Error('Invalid status value.')
+    if (platformArg && !VALID_PLATFORMS.has(platformArg)) throw new Error('Invalid platform value.')
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const filter: Record<string, any> = { owner: { $in: validOwnerIds }, deletedAt: null }
-    if (args.status) filter.status = args.status
-    if (args.platform) filter.platform = args.platform
+    if (statusArg) filter.status = statusArg
+    if (platformArg) filter.platform = platformArg
 
     const orders = await Order.find(filter)
       .populate('owner', 'name')
@@ -194,7 +197,6 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
       const userOrders = orders.filter((o) => o.owner?.toString() === u._id.toString())
       const sold = userOrders.filter((o) => o.soldPrice != null)
       const listed = userOrders.filter((o) => ['Listed', 'Sold'].includes(o.status))
-
       let revenue = 0, spent = 0, profit = 0
       for (const o of userOrders) {
         spent += o.purchaseCost ?? 0
@@ -205,10 +207,8 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
           profit += o.soldPrice - (o.purchaseCost ?? 0) - shipping - fees
         }
       }
-
       return {
         name: u.name,
-        email: u.email,
         totalOrders: userOrders.length,
         soldOrders: sold.length,
         activeOrders: userOrders.filter((o) => ['Sourced', 'Listed'].includes(o.status)).length,
@@ -221,25 +221,22 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
   }
 
   if (name === 'get_listings') {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const filter: Record<string, any> = {
+    const ownerNameArg = typeof args.owner_name === 'string' ? args.owner_name.slice(0, 100) : undefined
+
+    const listings = await Order.find({
       owner: { $in: validOwnerIds },
       deletedAt: null,
       status: { $in: ['Sourced', 'Listed'] },
-    }
-
-    const listings = await Order.find(filter)
+    })
       .populate('owner', 'name')
       .sort({ sourceDate: -1 })
       .lean({ virtuals: true })
 
-    let filtered = listings
-    if (args.owner_name) {
-      const name = String(args.owner_name).toLowerCase()
-      filtered = listings.filter((o) =>
-        ((o.owner as { name?: string })?.name ?? '').toLowerCase().includes(name)
-      )
-    }
+    const filtered = ownerNameArg
+      ? listings.filter((o) =>
+          ((o.owner as { name?: string })?.name ?? '').toLowerCase().includes(ownerNameArg.toLowerCase())
+        )
+      : listings
 
     return filtered.map((o) => ({
       orderId: o.orderId,
@@ -258,27 +255,20 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
     }))
   }
 
-  throw new Error(`Unknown tool: ${name}`)
+  throw new Error('Unknown tool.')
 }
 
-// ── main handler ──────────────────────────────────────────────────────────────
+// ── handlers ──────────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
   await connectDB()
-
-  const authed = await authenticate(req)
-  if (!authed) {
-    return NextResponse.json(
-      { jsonrpc: '2.0', id: null, error: { code: -32001, message: 'Unauthorized — MCP server disabled or invalid token.' } },
-      { status: 401 }
-    )
-  }
+  if (!(await authenticate(req))) return unauthorized()
 
   let body: { jsonrpc?: string; id?: unknown; method?: string; params?: unknown }
   try {
     body = await req.json()
   } catch {
-    return err(null, -32700, 'Parse error')
+    return rpcError(null, -32700, 'Parse error.')
   }
 
   const { id, method, params } = body
@@ -303,23 +293,24 @@ export async function POST(req: NextRequest) {
     const { name, arguments: args = {} } = params as { name: string; arguments?: Record<string, unknown> }
     try {
       const result = await callTool(name, args)
-      return ok(id, {
-        content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-      })
+      return ok(id, { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] })
     } catch (e) {
-      return err(id, -32603, e instanceof Error ? e.message : 'Internal error')
+      // Return safe error message — never expose internal DB/stack details
+      const msg = e instanceof Error && !e.message.includes('at ') ? e.message : 'Internal error.'
+      return rpcError(id, -32603, msg)
     }
   }
 
-  return err(id, -32601, `Method not found: ${method}`)
+  return rpcError(id, -32601, 'Method not found.')
 }
 
-// MCP servers should also respond to GET for capability discovery
-export async function GET() {
+// GET requires valid token — no unauthenticated capability discovery
+export async function GET(req: NextRequest) {
+  await connectDB()
+  if (!(await authenticate(req))) return unauthorized()
   return NextResponse.json({
     name: 'Reselling Dashboard MCP Server',
     version: '1.0.0',
-    description: 'Read-only access to orders, analytics, listings, and per-user stats.',
     tools: TOOLS.map((t) => ({ name: t.name, description: t.description })),
   })
 }

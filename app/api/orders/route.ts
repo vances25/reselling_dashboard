@@ -3,6 +3,7 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { z } from 'zod'
+import mongoose from 'mongoose'
 import { connectDB } from '@/lib/db'
 import { Order } from '@/lib/models/Order'
 import { User } from '@/lib/models/User'
@@ -10,31 +11,40 @@ import { authOptions } from '@/lib/auth'
 
 const createSchema = z.object({
   platform: z.enum(['eBay', 'Depop', 'Facebook', 'Other']),
-  productName: z.string().min(1),
+  productName: z.string().min(1).max(200),
   condition: z.enum(['New', 'Like New', 'Very Good', 'Good', 'Fair', 'Poor']).optional(),
-  purchaseCost: z.number().min(0),
+  purchaseCost: z.number().min(0).max(1_000_000),
   sourceDate: z.string().optional(),
-  sourceLocation: z.string().optional(),
-  listPrice: z.number().optional(),
-  soldPrice: z.number().optional(),
-  shippingCost: z.number().min(0).optional(),
+  sourceLocation: z.string().max(200).optional(),
+  listPrice: z.number().min(0).max(1_000_000).optional(),
+  soldPrice: z.number().min(0).max(1_000_000).optional(),
+  shippingCost: z.number().min(0).max(10_000).optional(),
   buyerPaysShipping: z.boolean().optional(),
-  platformFees: z.number().optional(),
+  platformFees: z.number().min(0).max(1_000_000).optional(),
   status: z.enum(['Sourced', 'Listed', 'Sold', 'Archived']).default('Sourced'),
-  location: z.string().optional(),
-  notes: z.string().optional(),
-  trackingNumber: z.string().optional(),
-  buyerUsername: z.string().optional(),
+  location: z.string().max(200).optional(),
+  notes: z.string().max(2000).optional(),
+  trackingNumber: z.string().max(100).optional(),
+  buyerUsername: z.string().max(100).optional(),
 })
 
+// Escape regex metacharacters to prevent ReDoS
+function escapeRegex(s: string) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 export async function GET(req: NextRequest) {
+  // Auth required — all order data is private
+  const session = await getServerSession(authOptions)
+  if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
   await connectDB()
   const { searchParams } = req.nextUrl
 
   const status = searchParams.get('status')
   const platform = searchParams.get('platform')
-  const owner = searchParams.get('owner')
-  const search = searchParams.get('search')
+  const ownerParam = searchParams.get('owner')
+  const searchRaw = searchParams.get('search')
   const showDeleted = searchParams.get('showDeleted') === 'true'
   const excludeArchived = searchParams.get('excludeArchived') === 'true'
   const page = Math.max(1, parseInt(searchParams.get('page') ?? '1'))
@@ -58,15 +68,20 @@ export async function GET(req: NextRequest) {
   else if (excludeArchived) filter.status = { $ne: 'Archived' }
   if (platform) filter.platform = platform
 
-  // Always restrict to orders owned by real users (prevents orphaned seed data showing up)
-  if (owner) {
-    filter.owner = owner
+  // Validate owner param as ObjectId before using in query
+  if (ownerParam) {
+    if (!mongoose.isValidObjectId(ownerParam)) {
+      return NextResponse.json({ error: 'Invalid owner id' }, { status: 400 })
+    }
+    filter.owner = ownerParam
   } else {
     const validOwnerIds = await User.distinct('_id')
     filter.owner = { $in: validOwnerIds }
   }
 
-  if (search) {
+  // Sanitize search: escape metacharacters + enforce length cap
+  if (searchRaw) {
+    const search = escapeRegex(searchRaw.slice(0, 100))
     filter.$or = [
       { productName: { $regex: search, $options: 'i' } },
       { buyerUsername: { $regex: search, $options: 'i' } },
@@ -98,8 +113,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: parsed.error.flatten() }, { status: 400 })
   }
 
-  const count = await Order.countDocuments()
-  const orderId = `ORD-${String(count + 1).padStart(4, '0')}`
+  // Atomic counter for orderId — avoids race condition from countDocuments + 1
+  const { Config } = await import('@/lib/models/Config')
+  const counter = await Config.findOneAndUpdate(
+    { key: 'orderCounter' },
+    { $inc: { value: 1 } },
+    { upsert: true, new: true }
+  )
+  const orderId = `ORD-${String(counter.value).padStart(4, '0')}`
 
   const order = await Order.create({
     ...parsed.data,

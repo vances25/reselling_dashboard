@@ -6,17 +6,26 @@ import bcrypt from 'bcryptjs'
 import { connectDB } from '@/lib/db'
 import { User } from '@/lib/models/User'
 import { getConfig } from '@/lib/models/Config'
+import { checkRateLimit } from '@/lib/rateLimit'
 
 const schema = z.object({
   name: z.string().min(1).max(50),
-  email: z.string().email(),
-  password: z.string().min(8),
+  email: z.string().email().max(200),
+  password: z.string().min(8).max(128),
 })
 
 export async function POST(req: NextRequest) {
+  // Rate limit: 5 attempts per IP per minute
+  const ip = req.headers.get('x-forwarded-for')?.split(',')[0] ?? 'unknown'
+  const { allowed } = checkRateLimit(`register:${ip}`, 5, 60_000)
+  if (!allowed) {
+    return NextResponse.json({ error: 'Too many requests. Try again later.' }, { status: 429 })
+  }
+
   await connectDB()
 
-  const registrationOpen = await getConfig('registrationOpen', true)
+  // Default is false — admin must explicitly enable registration
+  const registrationOpen = await getConfig('registrationOpen', false)
   if (!registrationOpen) {
     return NextResponse.json({ error: 'Registration is currently disabled.' }, { status: 403 })
   }
@@ -41,6 +50,7 @@ export async function POST(req: NextRequest) {
 
 export async function GET() {
   await connectDB()
-  const registrationOpen = await getConfig('registrationOpen', true)
+  // Default false — registration closed unless explicitly enabled
+  const registrationOpen = await getConfig('registrationOpen', false)
   return NextResponse.json({ registrationOpen })
 }

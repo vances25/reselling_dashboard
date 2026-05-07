@@ -6,7 +6,14 @@ import { Order } from '@/lib/models/Order'
 import { User } from '@/lib/models/User'
 import { EBAY_FEE_RATE } from '@/lib/utils'
 
-export async function GET() {
+export async function GET(req: Request) {
+  const { getServerSession } = await import('next-auth')
+  const { authOptions } = await import('@/lib/auth')
+  const session = await getServerSession(authOptions)
+  if (!session?.user) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
   await connectDB()
 
   // Only include orders from real users (excludes orphaned seed data)

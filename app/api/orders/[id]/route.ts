@@ -3,30 +3,41 @@ export const dynamic = 'force-dynamic'
 import { NextRequest, NextResponse } from 'next/server'
 import { getServerSession } from 'next-auth'
 import { z } from 'zod'
+import mongoose from 'mongoose'
 import { connectDB } from '@/lib/db'
 import { Order } from '@/lib/models/Order'
 import { authOptions } from '@/lib/auth'
 
 const updateSchema = z.object({
   platform: z.enum(['eBay', 'Depop', 'Facebook', 'Other']).optional(),
-  productName: z.string().min(1).optional(),
+  productName: z.string().min(1).max(200).optional(),
   condition: z.enum(['New', 'Like New', 'Very Good', 'Good', 'Fair', 'Poor']).optional(),
-  purchaseCost: z.number().min(0).optional(),
+  purchaseCost: z.number().min(0).max(1_000_000).optional(),
   sourceDate: z.string().optional(),
-  sourceLocation: z.string().optional(),
-  listPrice: z.number().optional(),
-  soldPrice: z.number().optional(),
-  shippingCost: z.number().min(0).optional(),
+  sourceLocation: z.string().max(200).optional(),
+  listPrice: z.number().min(0).max(1_000_000).optional(),
+  soldPrice: z.number().min(0).max(1_000_000).optional(),
+  shippingCost: z.number().min(0).max(10_000).optional(),
   buyerPaysShipping: z.boolean().optional(),
-  platformFees: z.number().optional(),
+  platformFees: z.number().min(0).max(1_000_000).optional(),
   status: z.enum(['Sourced', 'Listed', 'Sold', 'Archived']).optional(),
-  location: z.string().optional(),
-  notes: z.string().optional(),
-  trackingNumber: z.string().optional(),
-  buyerUsername: z.string().optional(),
+  location: z.string().max(200).optional(),
+  notes: z.string().max(2000).optional(),
+  trackingNumber: z.string().max(100).optional(),
+  buyerUsername: z.string().max(100).optional(),
 })
 
+function validateId(id: string) {
+  return mongoose.isValidObjectId(id)
+}
+
 export async function GET(req: NextRequest, { params }: { params: { id: string } }) {
+  // Auth required
+  const session = await getServerSession(authOptions)
+  if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  if (!validateId(params.id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
+
   await connectDB()
   const order = await Order.findById(params.id).populate('owner', 'name email').lean({ virtuals: true })
   if (!order) return NextResponse.json({ error: 'Not found' }, { status: 404 })
@@ -36,6 +47,8 @@ export async function GET(req: NextRequest, { params }: { params: { id: string }
 export async function PATCH(req: NextRequest, { params }: { params: { id: string } }) {
   const session = await getServerSession(authOptions)
   if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  if (!validateId(params.id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
   await connectDB()
   const order = await Order.findById(params.id)
@@ -64,6 +77,8 @@ export async function PATCH(req: NextRequest, { params }: { params: { id: string
 export async function DELETE(req: NextRequest, { params }: { params: { id: string } }) {
   const session = await getServerSession(authOptions)
   if (!session?.user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+
+  if (!validateId(params.id)) return NextResponse.json({ error: 'Not found' }, { status: 404 })
 
   await connectDB()
   const order = await Order.findById(params.id)
