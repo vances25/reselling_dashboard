@@ -25,7 +25,11 @@ export async function PATCH(req: NextRequest) {
   if (typeof body.registrationOpen === 'boolean') {
     await setConfig('registrationOpen', body.registrationOpen)
   }
+  if (typeof body.mcpEnabled === 'boolean') {
+    await setConfig('mcpEnabled', body.mcpEnabled)
+  }
 
   const registrationOpen = await getConfig('registrationOpen', true)
-  return NextResponse.json({ registrationOpen })
+  const mcpEnabled = await getConfig('mcpEnabled', false)
+  return NextResponse.json({ registrationOpen, mcpEnabled })
 }
