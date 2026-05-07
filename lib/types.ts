@@ -1,5 +1,6 @@
 export type OrderStatus = 'Sourced' | 'Listed' | 'Sold' | 'Archived'
 export type OrderPlatform = 'eBay' | 'Depop' | 'Facebook' | 'Other'
+export type ItemCondition = 'New' | 'Like New' | 'Very Good' | 'Good' | 'Fair' | 'Poor'
 
 export interface OrderOwner {
   _id: string
@@ -12,6 +13,7 @@ export interface Order {
   orderId: string
   platform: OrderPlatform
   productName: string
+  condition?: ItemCondition
   buyerUsername?: string
   purchaseCost: number
   sourceDate: string
@@ -19,6 +21,7 @@ export interface Order {
   listPrice?: number
   soldPrice?: number
   shippingCost: number
+  buyerPaysShipping: boolean
   platformFees?: number
   profit?: number
   projectedProfit?: number
