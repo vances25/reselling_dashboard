@@ -5,6 +5,7 @@ import { getServerSession } from 'next-auth'
 import { z } from 'zod'
 import { connectDB } from '@/lib/db'
 import { Order } from '@/lib/models/Order'
+import { User } from '@/lib/models/User'
 import { authOptions } from '@/lib/auth'
 
 const createSchema = z.object({
@@ -54,7 +55,15 @@ export async function GET(req: NextRequest) {
   if (!showDeleted) filter.deletedAt = null
   if (status) filter.status = status
   if (platform) filter.platform = platform
-  if (owner) filter.owner = owner
+
+  // Always restrict to orders owned by real users (prevents orphaned seed data showing up)
+  if (owner) {
+    filter.owner = owner
+  } else {
+    const validOwnerIds = await User.distinct('_id')
+    filter.owner = { $in: validOwnerIds }
+  }
+
   if (search) {
     filter.$or = [
       { productName: { $regex: search, $options: 'i' } },
