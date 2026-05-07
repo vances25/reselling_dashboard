@@ -36,6 +36,7 @@ export async function GET(req: NextRequest) {
   const owner = searchParams.get('owner')
   const search = searchParams.get('search')
   const showDeleted = searchParams.get('showDeleted') === 'true'
+  const excludeArchived = searchParams.get('excludeArchived') === 'true'
   const page = Math.max(1, parseInt(searchParams.get('page') ?? '1'))
   const limit = Math.min(100, Math.max(1, parseInt(searchParams.get('limit') ?? '25')))
   const sortBy = searchParams.get('sortBy') ?? 'createdAt'
@@ -54,6 +55,7 @@ export async function GET(req: NextRequest) {
   const filter: Record<string, any> = {}
   if (!showDeleted) filter.deletedAt = null
   if (status) filter.status = status
+  else if (excludeArchived) filter.status = { $ne: 'Archived' }
   if (platform) filter.platform = platform
 
   // Always restrict to orders owned by real users (prevents orphaned seed data showing up)

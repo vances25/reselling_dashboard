@@ -2,14 +2,14 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useSession } from 'next-auth/react'
-import { Plus } from 'lucide-react'
+import { Plus, Archive } from 'lucide-react'
 import { Order, OrdersResponse, OrderStatus, OrderPlatform } from '@/lib/types'
 import { OrdersTable } from '@/components/OrdersTable'
 import { OrderModal } from '@/components/OrderModal'
 import { formatCurrency } from '@/lib/utils'
 
 const PLATFORMS: OrderPlatform[] = ['eBay', 'Depop', 'Facebook', 'Other']
-const STATUSES: OrderStatus[] = ['Sourced', 'Listed', 'Sold', 'Archived']
+const ACTIVE_STATUSES: OrderStatus[] = ['Sourced', 'Listed', 'Sold']
 
 const PLATFORM_COLORS: Record<OrderPlatform, string> = {
   eBay: 'bg-blue-900/60 text-blue-300 border-blue-800',
@@ -30,6 +30,7 @@ export default function DashboardPage() {
   const [owner, setOwner] = useState('')
   const [sortBy, setSortBy] = useState('createdAt')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
+  const [showArchived, setShowArchived] = useState(false)
   const [showModal, setShowModal] = useState(false)
 
   const [stats, setStats] = useState<{
@@ -44,7 +45,8 @@ export default function DashboardPage() {
   const debounceRef = useRef<NodeJS.Timeout | undefined>(undefined)
 
   const fetchOrders = useCallback(async (params: {
-    page: number; search: string; status: string; platform: string; owner: string; sortBy: string; sortDir: string
+    page: number; search: string; status: string; platform: string
+    owner: string; sortBy: string; sortDir: string; showArchived: boolean
   }) => {
     setLoading(true)
     const q = new URLSearchParams()
@@ -54,6 +56,7 @@ export default function DashboardPage() {
     q.set('sortDir', params.sortDir)
     if (params.search) q.set('search', params.search)
     if (params.status) q.set('status', params.status)
+    else if (!params.showArchived) q.set('excludeArchived', 'true')
     if (params.platform) q.set('platform', params.platform)
     if (params.owner) q.set('owner', params.owner)
 
@@ -66,25 +69,17 @@ export default function DashboardPage() {
   const fetchStats = useCallback(async () => {
     const res = await fetch('/api/analytics')
     const json = await res.json()
-    const now = new Date()
-    const today = now.toDateString()
-    const weekAgo = new Date(now.getTime() - 7 * 86400000)
-    const monthAgo = new Date(now.getTime() - 30 * 86400000)
-
-    // We'd need all orders for this — use analytics data
     setStats({
-      todayRevenue: 0, // placeholder; real calculation needs all-orders fetch
+      todayRevenue: 0,
       weekRevenue: 0,
       monthRevenue: 0,
-      activeCount: Object.values(json.ordersByStatus as Record<string, number>).reduce((a: number, b: number) => a + b, 0),
+      activeCount: Object.values(json.ordersByStatus as Record<string, number>)
+        .reduce((a: number, b: number) => a + b, 0),
       allTimeProfit: json.totalProfit,
       platformCounts: json.ordersByPlatform,
     })
-    // suppress unused warnings
-    void today; void weekAgo; void monthAgo
   }, [])
 
-  // Fetch all sold orders for revenue stats
   const fetchRevenueStats = useCallback(async () => {
     const res = await fetch('/api/orders?limit=1000&status=Sold')
     const json = await res.json()
@@ -95,14 +90,12 @@ export default function DashboardPage() {
 
     let todayRev = 0, weekRev = 0, monthRev = 0
     for (const o of (json.orders as Order[])) {
+      if (!o.soldPrice) continue
       const d = new Date(o.updatedAt).getTime()
-      if (o.soldPrice) {
-        if (new Date(o.updatedAt).toDateString() === todayStr) todayRev += o.soldPrice
-        if (d >= weekAgo) weekRev += o.soldPrice
-        if (d >= monthAgo) monthRev += o.soldPrice
-      }
+      if (new Date(o.updatedAt).toDateString() === todayStr) todayRev += o.soldPrice
+      if (d >= weekAgo) weekRev += o.soldPrice
+      if (d >= monthAgo) monthRev += o.soldPrice
     }
-
     setStats((s) => s ? { ...s, todayRevenue: todayRev, weekRevenue: weekRev, monthRevenue: monthRev } : s)
   }, [])
 
@@ -114,12 +107,12 @@ export default function DashboardPage() {
   useEffect(() => {
     clearTimeout(debounceRef.current)
     debounceRef.current = setTimeout(() => {
-      fetchOrders({ page, search, status, platform, owner, sortBy, sortDir })
+      fetchOrders({ page, search, status, platform, owner, sortBy, sortDir, showArchived })
     }, search ? 300 : 0)
-  }, [page, search, status, platform, owner, sortBy, sortDir, fetchOrders])
+  }, [page, search, status, platform, owner, sortBy, sortDir, showArchived, fetchOrders])
 
   function refresh() {
-    fetchOrders({ page, search, status, platform, owner, sortBy, sortDir })
+    fetchOrders({ page, search, status, platform, owner, sortBy, sortDir, showArchived })
     fetchStats()
     fetchRevenueStats()
   }
@@ -150,7 +143,7 @@ export default function DashboardPage() {
             return (
               <button
                 key={p}
-                onClick={() => setPlatform(platform === p ? '' : p)}
+                onClick={() => { setPlatform(platform === p ? '' : p); setPage(1) }}
                 className={`px-3 py-1 rounded-full text-xs font-medium border transition-colors ${PLATFORM_COLORS[p]} ${platform === p ? 'ring-2 ring-white/30' : ''}`}
               >
                 {p} · {count}
@@ -175,8 +168,9 @@ export default function DashboardPage() {
           onChange={(e) => { setStatus(e.target.value); setPage(1) }}
           className="px-3 py-1.5 bg-gray-800 border border-gray-700 rounded-lg text-sm text-white focus:outline-none focus:ring-1 focus:ring-blue-500"
         >
-          <option value="">All Statuses</option>
-          {STATUSES.map((s) => <option key={s}>{s}</option>)}
+          <option value="">Active Orders</option>
+          {ACTIVE_STATUSES.map((s) => <option key={s}>{s}</option>)}
+          {showArchived && <option value="Archived">Archived</option>}
         </select>
 
         <select
@@ -214,6 +208,19 @@ export default function DashboardPage() {
           <option value="price:desc">List Price ↓</option>
           <option value="status:asc">Status</option>
         </select>
+
+        {/* Archived toggle */}
+        <button
+          onClick={() => { setShowArchived(!showArchived); setStatus(''); setPage(1) }}
+          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm border transition-colors ${
+            showArchived
+              ? 'bg-amber-900/40 border-amber-700 text-amber-300'
+              : 'bg-gray-800 border-gray-700 text-gray-400 hover:text-white'
+          }`}
+        >
+          <Archive size={14} />
+          {showArchived ? 'Hide Archived' : 'Show Archived'}
+        </button>
 
         <div className="ml-auto">
           <button
