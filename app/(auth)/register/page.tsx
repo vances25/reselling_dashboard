@@ -14,7 +14,8 @@ export default function RegisterPage() {
   useEffect(() => {
     fetch('/api/auth/register')
       .then((r) => r.json())
-      .then((d) => setRegistrationOpen(d.registrationOpen))
+      .then((d) => setRegistrationOpen(d.registrationOpen ?? false))
+      .catch(() => setRegistrationOpen(false))
   }, [])
 
   function set(key: string, val: string) {
